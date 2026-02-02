@@ -1,0 +1,207 @@
+module src/rogue/runtime
+
+import list
+import option
+import ref
+import string
+import io/console
+
+import src/rogue/util
+import src/rogue/model
+import src/rogue/dungeon
+import src/rogue/logic
+import src/rogue/render
+
+def withGameState[R](r: Ref[World]) { prog: () => R / GameState }: R =
+  try prog() with GameState {
+    def get() = resume(get(r))
+    def put(w: World) = { set(r, w); resume(()) }
+  }
+
+def withRng[R](seed: Ref[Int]) { prog: () => R / Rng }: R =
+  try prog() with Rng {
+    def nextInt(bound0: Int) = {
+      val bound = if (bound0 < 1) 1 else bound0
+      val m = 2147483647
+      val s = get(seed)
+      val s2 = 1103515245 * s + 12345
+      val n = modInt(s2, m)
+      set(seed, n)
+      resume(modInt(n, bound))
+    }
+  }
+
+def withLogBuffer[R](buf: Ref[List[String]]) { prog: () => R / Log }: R =
+  try prog() with Log {
+    def write(msg: String) = {
+      val xs = Cons(msg, get(buf))
+      set(buf, util::take(xs, 30))
+      resume(())
+    }
+    def snapshot() = resume(get(buf))
+    def clear() = { set(buf, Nil()); resume(()) }
+  }
+
+val ANSI_CLEAR = "\u001b[3J\u001b[2J\u001b[H"
+
+def withTerminalUI[R] { prog: () => R / UI }: R / Console =
+  try prog() with UI {
+    def draw(w: World, logs: List[String]) = {
+      println(ANSI_CLEAR)
+      println(renderHeader(w))
+      println("")
+      println(renderMap(w, 0))
+      println("")
+      println(renderStats(w))
+      val ls = renderLogs(logs)
+      if (ls == "") () else println(ls)
+      println("")
+      w.status match {
+        case Playing() =>
+          println("Command: e(up) s(left) d(down) f(right), . (wait), q (quit)")
+        case QuitGame() =>
+          ()
+        case _ =>
+          println("End: r (retry same level), n (new level), q (quit)")
+      }
+      resume(())
+    }
+
+    def read() = {
+      val s = do readLine()
+      resume(s)
+    }
+  }
+
+
+def withController[R] { prog: () => R / Controller }: R / {UI, Log, Rng} =
+  try prog() with Controller {
+    def choose(actor: Actor, w: World) = actor match {
+      case PlayerActor() =>
+        def loop(): Action / {UI, Log} = {
+          val line = do read()
+          parseAction(line) match {
+            case Some(a) => a
+            case None() =>
+              do model::write("Unknown command.")
+              loop()
+          }
+        }
+        val a = loop()
+        resume(a)
+
+      case MonsterActor(id) =>
+        findMonsterById(w.monsters, id) match {
+          case None() => resume(Wait())
+          case Some(m) =>
+            val a = decideMonster(m, w)
+            resume(a)
+        }
+    }
+  }
+
+def loopGame(init: World, diff: Int): Unit / {GameState, UI, Controller, Log, Rng} = {
+  val w = do get()
+  val logs = do snapshot()
+  do clear()
+  do draw(w, logs)
+
+  w.status match {
+    case Playing() =>
+      val act = do choose(PlayerActor(), w)
+      applyPlayerAction(act)
+
+      val w2 = do get()
+      w2.status match {
+        case Playing() =>
+          val ids = monsterIds(w2.monsters)
+          monstersTurn(ids)
+          val w3 = do get()
+          do put(World(w3.dungeon, w3.player, w3.monsters, w3.status, w3.turn + 1, w3.diff))
+          loopGame(init, diff)
+        case _ =>
+          loopGame(init, diff)
+      }
+
+    case Won() =>
+      val line = trim(do read())
+      if (line == "r" || line == "R") {
+        do clear()
+        do put(init)
+        loopGame(init, diff)
+      } else if (line == "n" || line == "N") {
+        do clear()
+        val nw = initWorld(diff)
+        do put(nw)
+        loopGame(nw, diff)
+      } else if (line == "q" || line == "Q") {
+        do put(World(w.dungeon, w.player, w.monsters, QuitGame(), w.turn, w.diff))
+        ()
+      } else {
+        loopGame(init, diff)
+      }
+
+    case Lost() =>
+      val line = trim(do read())
+      if (line == "r" || line == "R") {
+        do clear()
+        do put(init)
+        loopGame(init, diff)
+      } else if (line == "n" || line == "N") {
+        do clear()
+        val nw = initWorld(diff)
+        do put(nw)
+        loopGame(nw, diff)
+      } else if (line == "q" || line == "Q") {
+        do put(World(w.dungeon, w.player, w.monsters, QuitGame(), w.turn, w.diff))
+        ()
+      } else {
+        loopGame(init, diff)
+      }
+
+    case QuitGame() => ()
+  }
+}
+
+def readSeed(): Int / Console = {
+  println("Enter seed (number). Use a different seed for a different map.")
+  val s = trim(do readLine())
+  if (s == "") 1234567 else absInt(unsafeToInt(s))
+}
+
+def readDifficulty(): Int / Console = {
+  println("Select difficulty: e Easy, m Medium, h Hard")
+  val s = trim(do readLine())
+  if (s == "e" || s == "E") 1
+  else if (s == "m" || s == "M") 2
+  else if (s == "h" || s == "H") 3
+  else readDifficulty()
+}
+
+def play(): Unit / Console = {
+  val seedValue = readSeed()
+  println(ANSI_CLEAR)
+
+  val diff = readDifficulty()
+  println(ANSI_CLEAR)
+
+  val seed = ref(seedValue)
+  val buf = ref[List[String]](Nil())
+
+  val w0 = withRng(seed) { initWorld(diff) }
+  val st = ref[World](w0)
+
+  withGameState(st) {
+    withRng(seed) {
+      withLogBuffer(buf) {
+        withTerminalUI {
+          withController {
+            loopGame(w0, diff)
+          }
+        }
+      }
+    }
+  }
+}
+
+def runGame(): Unit = console { play() }

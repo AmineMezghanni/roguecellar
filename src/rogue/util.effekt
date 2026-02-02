@@ -1,0 +1,63 @@
+module src/rogue/util
+
+import list
+import option
+
+def not(b: Bool): Bool =
+  if (b) false else true
+
+def absInt(n: Int): Int =
+  if (n < 0) 0 - n else n
+
+def modInt(a: Int, b: Int): Int = {
+  val aa = absInt(a)
+  val bb = if (b < 1) 1 else b
+  aa - (aa / bb) * bb
+}
+
+def replicate[A](n: Int, x: A): List[A] =
+  if (n < 1) Nil()
+  else Cons(x, replicate(n - 1, x))
+
+def length[A](xs: List[A]): Int = xs match {
+  case Nil() => 0
+  case Cons(_, t) => 1 + length(t)
+}
+
+def take[A](xs: List[A], n: Int): List[A] =
+  if (n < 1) Nil()
+  else xs match {
+    case Nil() => Nil()
+    case Cons(h, t) => Cons(h, take(t, n - 1))
+  }
+
+def reverse[A](xs: List[A], acc: List[A]): List[A] = xs match {
+  case Nil() => acc
+  case Cons(h, t) => reverse(t, Cons(h, acc))
+}
+
+def nthOpt[A](xs: List[A], i: Int): Option[A] = xs match {
+  case Nil() => None()
+  case Cons(h, t) =>
+    if (i == 0) Some(h)
+    else nthOpt(t, i - 1)
+}
+
+def updateNth[A](xs: List[A], i: Int, x: A): List[A] = xs match {
+  case Nil() => Nil()
+  case Cons(h, t) =>
+    if (i == 0) Cons(x, t)
+    else Cons(h, updateNth(t, i - 1, x))
+}
+
+def dropN[A](xs: List[A], n: Int): List[A] =
+  if (n < 1) xs
+  else xs match {
+    case Nil() => Nil()
+    case Cons(_, t) => dropN(t, n - 1)
+  }
+
+def headOpt[A](xs: List[A]): Option[A] = xs match {
+  case Nil() => None()
+  case Cons(h, _) => Some(h)
+}

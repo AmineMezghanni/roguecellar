@@ -1,0 +1,64 @@
+module src/rogue/model
+
+import list
+
+type Tile {
+  Wall()
+  Floor()
+  Exit()
+}
+
+record Pos(x: Int, y: Int)
+record Dungeon(w: Int, h: Int, rows: List[List[Tile]])
+
+type MonsterKind {
+  Goblin()
+  Rat()
+}
+
+record Monster(id: Int, kind: MonsterKind, pos: Pos, hp: Int)
+record Player(pos: Pos, hp: Int)
+
+type Status {
+  Playing()
+  Won()
+  Lost()
+  QuitGame()
+}
+
+record World(dungeon: Dungeon, player: Player, monsters: List[Monster], status: Status, turn: Int, diff: Int)
+
+type Actor {
+  PlayerActor()
+  MonsterActor(id: Int)
+}
+
+type Action {
+  Move(dx: Int, dy: Int)
+  Wait()
+  QuitCmd()
+}
+
+interface GameState {
+  def get(): World
+  def put(w: World): Unit
+}
+
+interface Rng {
+  def nextInt(bound: Int): Int
+}
+
+interface Log {
+  def write(msg: String): Unit
+  def snapshot(): List[String]
+  def clear(): Unit
+}
+
+interface UI {
+  def draw(w: World, logs: List[String]): Unit
+  def read(): String
+}
+
+interface Controller {
+  def choose(actor: Actor, w: World): Action
+}

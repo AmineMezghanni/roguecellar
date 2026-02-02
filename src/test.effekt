@@ -1,10 +1,259 @@
-module src/test
+module test
 
-import test
-import src/lib
+import list
+import option
+import ref
+import string
+import io/console
 
-def main() = mainSuite("lib") {
-  test("Hello world") {
-    assertEqual(helloWorld(), "Hello, world!")
+import src/rogue/util
+import src/rogue/model
+import src/rogue/dungeon
+import src/rogue/logic
+import src/rogue/render
+import src/rogue/runtime
+
+def containsPos(xs: List[Pos], p: Pos): Bool = xs match {
+  case Nil() => false
+  case Cons(h, t) => if (eqPos(h, p)) true else containsPos(t, p)
+}
+
+def reversePos(xs: List[Pos], acc: List[Pos]): List[Pos] = xs match {
+  case Nil() => acc
+  case Cons(h, t) => reversePos(t, Cons(h, acc))
+}
+
+def countExitRow(row: List[Tile]): Int = row match {
+  case Nil() => 0
+  case Cons(t, rest) =>
+    val one = t match { case Exit() => 1; case _ => 0 }
+    one + countExitRow(rest)
+}
+
+def countExits(d: Dungeon): Int = d.rows match {
+  case Nil() => 0
+  case Cons(r, rs) => countExitRow(r) + countExits(Dungeon(d.w, d.h, rs))
+}
+
+def findExitPos(d: Dungeon, y: Int, x: Int): Option[Pos] =
+  if (y >= d.h) None()
+  else if (x >= d.w) findExitPos(d, y + 1, 0)
+  else
+    tileAt(d, Pos(x, y)) match {
+      case Exit() => Some(Pos(x, y))
+      case _ => findExitPos(d, y, x + 1)
+    }
+
+def neighborsWalkable(d: Dungeon, p: Pos): List[Pos] = {
+  def addIf(acc: List[Pos], q: Pos): List[Pos] =
+    if (inBounds(d, q) && isWalkable(tileAt(d, q))) Cons(q, acc) else acc
+
+  val a0 = Nil()
+  val a1 = addIf(a0, Pos(p.x + 1, p.y))
+  val a2 = addIf(a1, Pos(p.x - 1, p.y))
+  val a3 = addIf(a2, Pos(p.x, p.y + 1))
+  val a4 = addIf(a3, Pos(p.x, p.y - 1))
+  reversePos(a4, Nil())
+}
+
+def reachable(d: Dungeon, start: Pos, goal: Pos): Bool = {
+  def bfs(frontier: List[Pos], seen: List[Pos]): Bool = frontier match {
+    case Nil() => false
+    case Cons(p, rest) =>
+      if (eqPos(p, goal)) true
+      else {
+        val ns = neighborsWalkable(d, p)
+        def pushNew(xs: List[Pos], f: List[Pos], s: List[Pos]): (List[Pos], List[Pos]) = xs match {
+          case Nil() => (f, s)
+          case Cons(q, qs) =>
+            if (containsPos(s, q)) pushNew(qs, f, s)
+            else pushNew(qs, Cons(q, f), Cons(q, s))
+        }
+        val (f2, s2) = pushNew(ns, rest, seen)
+        bfs(reversePos(f2, Nil()), s2)
+      }
+  }
+  bfs(Cons(start, Nil()), Cons(start, Nil()))
+}
+
+def testParseAction(): Bool = {
+  val a1 = render::parseAction("e")
+  val a2 = render::parseAction("s")
+  val a3 = render::parseAction("d")
+  val a4 = render::parseAction("f")
+  val ok1 = a1 match { case Some(Move(0, -1)) => true; case _ => false }
+  val ok2 = a2 match { case Some(Move(-1, 0)) => true; case _ => false }
+  val ok3 = a3 match { case Some(Move(0, 1)) => true; case _ => false }
+  val ok4 = a4 match { case Some(Move(1, 0)) => true; case _ => false }
+  ok1 && ok2 && ok3 && ok4
+}
+
+def testRngDeterminism(): Bool = {
+  val seed1 = ref(12345)
+  val seed2 = ref(12345)
+  val (d1, s1) = runtime::withRng(seed1) { dungeon::generateDungeon(40, 20) }
+  val (d2, s2) = runtime::withRng(seed2) { dungeon::generateDungeon(40, 20) }
+  val e1 = findExitPos(d1, 0, 0)
+  val e2 = findExitPos(d2, 0, 0)
+  (eqPos(s1, s2)) &&
+  (e1 match { case Some(p1) =>
+      e2 match { case Some(p2) => eqPos(p1, p2); case _ => false }
+    case _ => false })
+}
+
+def testOneReachableExit(): Bool = {
+  val seed = ref(777)
+  val (d, start) = runtime::withRng(seed) { dungeon::generateDungeon(40, 20) }
+  val exits = countExits(d)
+  val ex = findExitPos(d, 0, 0)
+  val okExit = exits == 1
+  val okReach =
+    ex match {
+      case Some(ep) => reachable(d, start, ep)
+      case None() => false
+    }
+  okExit && okReach
+}
+
+def allSpawnsValid(d: Dungeon, start: Pos, ms: List[Monster]): Bool = ms match {
+  case Nil() => true
+  case Cons(m, rest) =>
+    val okTile = isFloor(tileAt(d, m.pos))
+    val okNotStart = util::not(eqPos(m.pos, start))
+    val ok = okTile && okNotStart
+    ok && allSpawnsValid(d, start, rest)
+}
+
+def hasGoblinAndRat(ms: List[Monster], g: Bool, r: Bool): Bool = ms match {
+  case Nil() => g && r
+  case Cons(m, rest) =>
+    m.kind match {
+      case Goblin() => hasGoblinAndRat(rest, true, r)
+      case Rat() => hasGoblinAndRat(rest, g, true)
+    }
+}
+
+def testInitWorldSpawns(): Bool = {
+  val seed = ref(42)
+  val w = runtime::withRng(seed) { logic::initWorld(2) }
+  val okKinds = hasGoblinAndRat(w.monsters, false, false)
+  val okSpawns = allSpawnsValid(w.dungeon, w.player.pos, w.monsters)
+  okKinds && okSpawns
+}
+
+def testAiAggroOrdering(): Bool = {
+  val seed = ref(999)
+  val w = runtime::withRng(seed) { logic::initWorld(2) }
+  val p = w.player.pos
+  val g = Monster(1, Goblin(), Pos(p.x + logic::goblinAggro(2), p.y), 6)
+  val r = Monster(2, Rat(), Pos(p.x + logic::ratAggro(2) + 1, p.y), 4)
+  val w2 = World(w.dungeon, w.player, Cons(r, Cons(g, Nil())), Playing(), 1, 2)
+  val aG = runtime::withRng(seed) { logic::decideMonster(g, w2) }
+  val aR = runtime::withRng(seed) { logic::decideMonster(r, w2) }
+  val okG = aG match { case Move(_, _) => true; case _ => false }
+  val okR = aR match { case Move(_, _) => true; case _ => false }
+  okG && okR
+}
+
+def testReachExitWinsAndLogs(): Bool = {
+  val seed = ref(2024)
+  val buf = ref[List[String]](Nil())
+  val w0 = runtime::withRng(seed) { logic::initWorld(2) }
+  val st = ref[World](w0)
+
+  runtime::withGameState(st) {
+    runtime::withRng(seed) {
+      runtime::withLogBuffer(buf) {
+        val w = do get()
+        val ex = findExitPos(w.dungeon, 0, 0)
+        ex match {
+          case None() => false
+          case Some(ep) =>
+            val near =
+              if (inBounds(w.dungeon, Pos(ep.x - 1, ep.y)) && isWalkable(tileAt(w.dungeon, Pos(ep.x - 1, ep.y))))
+                Pos(ep.x - 1, ep.y)
+              else Pos(ep.x, ep.y - 1)
+            do put(World(w.dungeon, Player(near, w.player.hp), w.monsters, Playing(), w.turn, w.diff))
+            logic::applyPlayerAction(Move(ep.x - near.x, ep.y - near.y))
+            val w2 = do get()
+            val logs = do snapshot()
+            val okStatus = w2.status match { case Won() => true; case _ => false }
+            val okLog = logs match {
+              case Cons(h, _) => h == "You reached the exit. You win."
+              case _ => false
+            }
+            okStatus && okLog
+        }
+      }
+    }
   }
 }
+
+def testQuitSetsQuitGameAndLogs(): Bool = {
+  val seed = ref(2025)
+  val buf = ref[List[String]](Nil())
+  val w0 = runtime::withRng(seed) { logic::initWorld(2) }
+  val st = ref[World](w0)
+
+  runtime::withGameState(st) {
+    runtime::withRng(seed) {
+      runtime::withLogBuffer(buf) {
+        logic::applyPlayerAction(QuitCmd())
+        val w2 = do get()
+        val logs = do snapshot()
+        val okStatus = w2.status match { case QuitGame() => true; case _ => false }
+        val okLog = logs match {
+          case Cons(h, _) => h == "You quit."
+          case _ => false
+        }
+        okStatus && okLog
+      }
+    }
+  }
+}
+
+def report(name: String, ok: Bool): Unit / Console =
+  if (ok) do writeLine("PASS " ++ name) else do writeLine("FAIL " ++ name)
+
+def runAll(): Unit / Console = {
+  do writeLine("RogueCellar")
+  do writeLine("")
+
+  val ok1 = testParseAction()
+  report("parseAction uses e/s/d/f mapping", ok1)
+
+  val ok2 = testRngDeterminism()
+  report("RNG determinism: same seed -> same start/exit", ok2)
+
+  val ok3 = testOneReachableExit()
+  report("Dungeon has exactly one exit and it is reachable", ok3)
+
+  val ok4 = testInitWorldSpawns()
+  report("initWorld spawns both goblin and rat and all spawns valid", ok4)
+
+  val ok5 = testAiAggroOrdering()
+  report("AI: goblin chases from farther away than rat", ok5)
+
+  val ok6 = testReachExitWinsAndLogs()
+  report("Reaching exit sets Won and logs the win message", ok6)
+
+  val ok7 = testQuitSetsQuitGameAndLogs()
+  report("Player quit sets QuitGame and logs the quit message", ok7)
+
+  val fails =
+    (if (ok1) 0 else 1) +
+    (if (ok2) 0 else 1) +
+    (if (ok3) 0 else 1) +
+    (if (ok4) 0 else 1) +
+    (if (ok5) 0 else 1) +
+    (if (ok6) 0 else 1) +
+    (if (ok7) 0 else 1)
+
+  do writeLine("")
+  do writeLine(show(fails) ++ " fail")
+  do writeLine(show(7) ++ " tests total")
+  if (fails == 0) do writeLine("All RogueCellar tests passed.") else do writeLine("Some RogueCellar tests failed.")
+}
+
+def run(): Unit = console { runAll() }
+def main(): Unit = run()

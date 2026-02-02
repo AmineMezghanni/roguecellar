@@ -1,0 +1,144 @@
+module src/rogue/dungeon
+
+import list
+import option
+
+import src/rogue/util
+import src/rogue/model
+
+def inBounds(d: Dungeon, p: Pos): Bool =
+  0 <= p.x && p.x < d.w && 0 <= p.y && p.y < d.h
+
+def tileAt(d: Dungeon, p: Pos): Tile =
+  if (util::not(inBounds(d, p))) Wall()
+  else
+    nthOpt(d.rows, p.y) match {
+      case None() => Wall()
+      case Some(row) =>
+        nthOpt(row, p.x) match {
+          case None() => Wall()
+          case Some(t) => t
+        }
+    }
+
+def setTile(d: Dungeon, p: Pos, t: Tile): Dungeon =
+  if (util::not(inBounds(d, p))) d
+  else
+    nthOpt(d.rows, p.y) match {
+      case None() => d
+      case Some(row) =>
+        val newRow = updateNth(row, p.x, t)
+        Dungeon(d.w, d.h, updateNth(d.rows, p.y, newRow))
+    }
+
+def isWalkable(t: Tile): Bool = t match {
+  case Wall() => false
+  case Floor() => true
+  case Exit() => true
+}
+
+def isFloor(t: Tile): Bool = t match {
+  case Floor() => true
+  case _ => false
+}
+
+record Room(x1: Int, y1: Int, x2: Int, y2: Int)
+
+def roomCenter(r: Room): Pos =
+  Pos((r.x1 + r.x2) / 2, (r.y1 + r.y2) / 2)
+
+def overlaps(a: Room, b: Room): Bool = {
+  val sep =
+    a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2
+  if (sep) false else true
+}
+
+def anyOverlap(r: Room, rooms: List[Room]): Bool = rooms match {
+  case Nil() => false
+  case Cons(o, rest) => if (overlaps(r, o)) true else anyOverlap(r, rest)
+}
+
+def carveRoom(d: Dungeon, r: Room): Dungeon = {
+  def carveY(dd: Dungeon, y: Int): Dungeon =
+    if (y > r.y2) dd
+    else {
+      def carveX(ddd: Dungeon, x: Int): Dungeon =
+        if (x > r.x2) ddd
+        else carveX(setTile(ddd, Pos(x, y), Floor()), x + 1)
+      carveY(carveX(dd, r.x1), y + 1)
+    }
+  carveY(d, r.y1)
+}
+
+def carveCorridor(d: Dungeon, a: Pos, b: Pos): Dungeon = {
+  def stepX(dd: Dungeon, x: Int, target: Int, y: Int): Dungeon =
+    if (x == target) setTile(dd, Pos(x, y), Floor())
+    else {
+      val next = if (x < target) x + 1 else x - 1
+      stepX(setTile(dd, Pos(x, y), Floor()), next, target, y)
+    }
+
+  def stepY(dd: Dungeon, y: Int, target: Int, x: Int): Dungeon =
+    if (y == target) setTile(dd, Pos(x, y), Floor())
+    else {
+      val next = if (y < target) y + 1 else y - 1
+      stepY(setTile(dd, Pos(x, y), Floor()), next, target, x)
+    }
+
+  val d1 = stepX(d, a.x, b.x, a.y)
+  stepY(d1, a.y, b.y, b.x)
+}
+
+def emptyDungeon(w: Int, h: Int): Dungeon =
+  Dungeon(w, h, replicate(h, replicate(w, Wall())))
+
+def lastRoom(rs: List[Room], fallback: Room): Room = rs match {
+  case Nil() => fallback
+  case Cons(h, Nil()) => h
+  case Cons(_, t) => lastRoom(t, fallback)
+}
+
+def genRooms(target: Int, w: Int, h: Int, rooms: List[Room], d: Dungeon): (List[Room], Dungeon) / Rng =
+  if (target < 1) (rooms, d)
+  else {
+    val rw = 4 + do nextInt(7)
+    val rh = 3 + do nextInt(6)
+    val rx = 1 + do nextInt(w - rw - 2)
+    val ry = 1 + do nextInt(h - rh - 2)
+    val r = Room(rx, ry, rx + rw, ry + rh)
+
+    if (anyOverlap(r, rooms)) genRooms(target - 1, w, h, rooms, d)
+    else genRooms(target - 1, w, h, Cons(r, rooms), carveRoom(d, r))
+  }
+
+def reverseRooms(rs: List[Room], acc: List[Room]): List[Room] = rs match {
+  case Nil() => acc
+  case Cons(h, t) => reverseRooms(t, Cons(h, acc))
+}
+
+def connectRooms(d: Dungeon, rooms: List[Room]): Dungeon = rooms match {
+  case Nil() => d
+  case Cons(_, Nil()) => d
+  case Cons(r1, Cons(r2, tail)) =>
+    val c1 = roomCenter(r1)
+    val c2 = roomCenter(r2)
+    connectRooms(carveCorridor(d, c1, c2), Cons(r2, tail))
+}
+
+def generateDungeon(w: Int, h: Int): (Dungeon, Pos) / Rng = {
+  val base = emptyDungeon(w, h)
+  val (roomsRev, carved) = genRooms(25, w, h, Nil(), base)
+  val rooms = reverseRooms(roomsRev, Nil())
+  val connected = connectRooms(carved, rooms)
+
+  val fallback = Room(2, 2, 12, 7)
+  val start =
+    rooms match {
+      case Nil() => Pos(1, 1)
+      case Cons(r, _) => roomCenter(r)
+    }
+
+  val exitPos = roomCenter(lastRoom(rooms, fallback))
+  val withExit = setTile(connected, exitPos, Exit())
+  (withExit, start)
+}

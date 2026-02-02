@@ -1,5 +1,7 @@
-module main // must be named same as the file!
+module main
 
-import src/lib
+import src/rogue/runtime
 
-def main(): Unit = println(helloWorld())
+def run(): Unit = runtime::runGame()
+
+def main(): Unit = run()
